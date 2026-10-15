@@ -220,12 +220,34 @@ class _BrowserSession:
         self.ctx = None
         self.page = None
         self._ready = False
-        try:
-            await self._ensure_ready()
-        except Exception as e:
-            raise DuckAIError("browser launch failed: %s" % str(e)[:100])
+        last_err = None
+        # Cloud datacenter IPs are often deliberately slowed by duck.ai; retry
+        # the whole warm-up a few times with growing timeouts before giving up.
+        for attempt, nav_timeout in enumerate((60000, 120000, 180000), start=1):
+            try:
+                await self._ensure_ready(nav_timeout=nav_timeout)
+                return
+            except Exception as e:
+                last_err = e
+                logger.info("warmup attempt %d failed: %s", attempt, str(e)[:120])
+                try:
+                    if self.browser:
+                        await self.browser.close()
+                except Exception:
+                    pass
+                try:
+                    if self._pw:
+                        await self._pw.stop()
+                except Exception:
+                    pass
+                self._pw = None
+                self.browser = None
+                self.ctx = None
+                self.page = None
+                self._ready = False
+        raise DuckAIError("browser launch failed: %s" % str(last_err)[:100])
 
-    async def _ensure_ready(self) -> None:
+    async def _ensure_ready(self, nav_timeout: int = 60000) -> None:
         if self._ready:
             return
         self._pw = await async_playwright().start()
@@ -249,11 +271,11 @@ class _BrowserSession:
         # SPEED PATCH: keep ONE warm page alive across requests instead of
         # reopening+reloading duck.ai (and re-running the 7s warm-up) every ask.
         self.page = await self.ctx.new_page()
-        await self.page.goto(BASE, wait_until="commit", timeout=60000)
+        await self.page.goto(BASE, wait_until="commit", timeout=nav_timeout)
         # WAIT FOR THE APP TO ACTUALLY BE READY (not a blind 7s sleep).
         # On slow mobile networks duck.ai's JS can take far longer than 7s.
         try:
-            await self.page.wait_for_selector("textarea", timeout=120000)
+            await self.page.wait_for_selector("textarea", timeout=max(120000, nav_timeout))
             logger.info("warmup: textarea appeared")
         except Exception as e:
             logger.info("warmup: textarea did NOT appear in 60s: %s", str(e)[:80])
