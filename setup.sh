@@ -1,7 +1,7 @@
 #!/bin/bash
 # DuckAI2API 一键启动脚本（在 Claw Cloud Run 容器内执行）
 set -e
-cd /app
+mkdir -p /app && cd /app
 
 REPO="${REPO:-你的GitHub用户名/仓库名}"
 BASE="https://raw.githubusercontent.com/${REPO}/main"
