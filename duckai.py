@@ -38,8 +38,31 @@ from playwright.async_api import async_playwright
 logger = logging.getLogger("duckai")
 
 BASE = os.getenv("DUCKAI_BASE", "https://duck.ai")
-# Use the system Chrome, not Playwright's bundled Chromium (fingerprint reasons above).
-CHROME_PATH = os.getenv("DUCKAI_CHROME_PATH", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+# Browser resolution order:
+#   1) DUCKAI_CHROME_PATH env override (explicit executable)
+#   2) well-known system Chrome/Chromium install locations (Linux/macOS/Windows)
+#   3) Playwright's bundled Chromium (no channel) - used in containers such as
+#      Render/Docker where no system Chrome exists.
+_CHROME_CANDIDATES = (
+    "/opt/google/chrome/chrome",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+)
+
+def resolve_browser() -> dict:
+    """Return extra kwargs for chromium.launch(): executable_path if found, else {} (bundled Chromium)."""
+    env_path = os.getenv("DUCKAI_CHROME_PATH", "").strip()
+    if env_path and os.path.exists(env_path):
+        return {"executable_path": env_path}
+    for c in _CHROME_CANDIDATES:
+        if os.path.exists(c):
+            return {"executable_path": c}
+    return {}
 # A real desktop Chrome UA (no "HeadlessChrome" marker). Version pinned to a common
 # stable release; must NOT contain "HeadlessChrome".
 REAL_UA = (
@@ -206,10 +229,9 @@ class _BrowserSession:
         if self._ready:
             return
         self._pw = await async_playwright().start()
-        launch: dict = {"headless": True, "channel": "chrome"}
-        if CHROME_PATH and os.path.exists(CHROME_PATH):
-            launch["executable_path"] = CHROME_PATH
-        launch["args"] = ["--disable-blink-features=AutomationControlled"]
+        launch: dict = {"headless": True}
+        launch.update(resolve_browser())
+        launch["args"] = ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"]
         self.browser = await self._pw.chromium.launch(**launch)
         self.ctx = await self.browser.new_context(user_agent=REAL_UA)
         # hide navigator.webdriver so the app can't tell it's automated, and
