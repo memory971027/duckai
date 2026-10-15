@@ -4,6 +4,7 @@
     "ghcr.io/devcontainers/features/sshd:1": { "version": "latest" }
   },
   "postCreateCommand": "pip install --no-cache-dir -r requirements.txt",
+  "postStartCommand": "cd /workspaces/duckai && (PORT=8080 nohup python3 main.py > /tmp/duckai.log 2>&1 &)",
   "forwardPorts": [8080],
   "portsAttributes": {
     "8080": { "label": "DuckAI", "onAutoForward": "notify" }
