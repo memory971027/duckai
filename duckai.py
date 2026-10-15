@@ -203,8 +203,22 @@ class _BrowserSession:
         except Exception:
             return False
 
-    async def _rebuild(self) -> None:
-        logger.info("rebuilding browser session (page died)")
+    async def _boot(self) -> None:
+        """Launch browser + warm up duck.ai, retrying with growing timeouts.
+        Cloud datacenter IPs are often deliberately slowed by duck.ai, so a
+        single 60s navigation is frequently not enough."""
+        last_err = None
+        for attempt, nav_timeout in enumerate((60000, 120000, 180000), start=1):
+            try:
+                await self._ensure_ready(nav_timeout=nav_timeout)
+                return
+            except Exception as e:
+                last_err = e
+                logger.info("warmup attempt %d failed: %s", attempt, str(e)[:120])
+                await self._teardown()
+        raise DuckAIError("browser launch failed: %s" % str(last_err)[:100])
+
+    async def _teardown(self) -> None:
         try:
             if self.browser:
                 await self.browser.close()
@@ -220,32 +234,14 @@ class _BrowserSession:
         self.ctx = None
         self.page = None
         self._ready = False
-        last_err = None
-        # Cloud datacenter IPs are often deliberately slowed by duck.ai; retry
-        # the whole warm-up a few times with growing timeouts before giving up.
-        for attempt, nav_timeout in enumerate((60000, 120000, 180000), start=1):
-            try:
-                await self._ensure_ready(nav_timeout=nav_timeout)
-                return
-            except Exception as e:
-                last_err = e
-                logger.info("warmup attempt %d failed: %s", attempt, str(e)[:120])
-                try:
-                    if self.browser:
-                        await self.browser.close()
-                except Exception:
-                    pass
-                try:
-                    if self._pw:
-                        await self._pw.stop()
-                except Exception:
-                    pass
-                self._pw = None
-                self.browser = None
-                self.ctx = None
-                self.page = None
-                self._ready = False
-        raise DuckAIError("browser launch failed: %s" % str(last_err)[:100])
+
+    async def _rebuild(self) -> None:
+        logger.info("rebuilding browser session (page died)")
+        await self._teardown()
+        try:
+            await self._boot()
+        except Exception as e:
+            raise DuckAIError("browser launch failed: %s" % str(e)[:100])
 
     async def _ensure_ready(self, nav_timeout: int = 60000) -> None:
         if self._ready:
@@ -297,7 +293,7 @@ class _BrowserSession:
 
     async def _send_ui_inner(self, prompt: str, timeout: float = 120.0, _retried: bool = False) -> str:
         try:
-            await self._ensure_ready()
+            await self._boot()
         except Exception as e:
             raise DuckAIError("browser launch failed: %s" % str(e)[:100])
         if self.page is None or not await self._page_alive():
